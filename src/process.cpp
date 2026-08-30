@@ -744,6 +744,7 @@ namespace proc {
     // Add Stream-specific environment variables
     _env["PRISM_APP_ID"] = std::to_string(_app_id);
     _env["PRISM_APP_NAME"] = _app.name;
+    _env["PRISM_CLIENT_NAME"] = launch_session->client_name;
     _env["PRISM_SESSION_ID"] = std::to_string(launch_session->id);
     _env["PRISM_CLIENT_WIDTH"] = std::to_string(launch_session->width);
     _env["PRISM_CLIENT_HEIGHT"] = std::to_string(launch_session->height);
