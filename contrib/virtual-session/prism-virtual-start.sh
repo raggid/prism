@@ -119,12 +119,16 @@ fi
 # Switch the virtual output to the client's refresh rate. Virtual outputs only
 # advertise 60Hz, so add a custom mode first (kscreen-doctor takes mHz). The
 # resulting mode may be slightly off (e.g. 119.85) but mode.WxH@FPS resolves it.
+# Always force the mode: KWin restores the last saved config for this
+# connector (possibly another client's resolution), so even at 60Hz the
+# output may not come up at ${W}x${H}.
 if [ "$FPS" != "60" ]; then
-  echo "setting $VOUT mode to ${W}x${H}@${FPS}"
   prism_virtual_kscreen 10 "output.$VOUT.addCustomMode.$W.$H.$((FPS * 1000)).full" 2>/dev/null || true
-  prism_virtual_kscreen 10 "output.$VOUT.mode.${W}x${H}@${FPS}" 2>/dev/null \
-    || echo "WARN: could not switch $VOUT to ${W}x${H}@${FPS}, staying at 60Hz"
 fi
+echo "setting $VOUT mode to ${W}x${H}@${FPS}"
+prism_virtual_kscreen 10 "output.$VOUT.mode.${W}x${H}@${FPS}" 2>/dev/null \
+  || prism_virtual_kscreen 10 "output.$VOUT.mode.${W}x${H}" 2>/dev/null \
+  || echo "WARN: could not switch $VOUT to ${W}x${H}@${FPS}"
 
 # Enable VRR on the virtual output so KWin paces frames by content instead of
 # a fixed vblank; the streamer captures frames as they are produced.
@@ -151,9 +155,9 @@ echo "kwin:$VOUT" > "$OVERRIDE_FILE"
 # physical default on teardown.
 if ! pactl list short sinks 2>/dev/null | grep -q '^[0-9]*[[:space:]]prism-stream[[:space:]]'; then
   pactl load-module module-null-sink sink_name=prism-stream \
-    sink_properties=device.description="Prism Stream Capture" >/dev/null 2>&1 || true
+    'sink_properties="device.description=\"Prism Stream Capture\""' >/dev/null 2>&1 || true
 fi
-PHYSICAL_SINK="$(pactl get-default-sink 2>/dev/null || true)"
+PHYSICAL_SINK="$(prism_audio_physical_sink 2>/dev/null || true)"
 setsid "$SCRIPT_DIR/prism-virtual-audio.sh" "$PHYSICAL_SINK" >>"$LOG" 2>&1 9>&- &
 
 # Disable every enabled output except the virtual one (KWin reshuffles
