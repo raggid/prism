@@ -95,7 +95,10 @@ while [ -f "$OVERRIDE_FILE" ] && prism_unit_live "$PRISM_HEADLESS_UNIT"; do
   if [ -n "$PHYSICAL" ]; then
     current="$(pactl get-default-sink 2>/dev/null || true)"
     case "$current" in
-      "$CAPTURE_SINK" | sink-prism-*)
+      # The desktop shares this PipeWire daemon; a Prism sink as the global
+      # default (e.g. picked in the nested Plasma's volume applet) silently
+      # routes desktop apps into the stream. Session apps use PULSE_SINK.
+      "$CAPTURE_SINK" | "$SESSION_SINK" | sink-prism-*)
         pactl set-default-sink "$PHYSICAL" >/dev/null 2>&1 || true ;;
     esac
   fi
@@ -114,29 +117,54 @@ while [ -f "$OVERRIDE_FILE" ] && prism_unit_live "$PRISM_HEADLESS_UNIT"; do
     done
   fi
 
+  # `pactl list sink-inputs` reports the sink by index, not name.
+  SINKS_SHORT="$(pactl list short sinks 2>/dev/null)"
+  SESSION_SINK_ID="$(printf '%s\n' "$SINKS_SHORT" | awk -v n="$SESSION_SINK" '$2 == n {print $1; exit}')"
+  CAPTURE_SINK_ID="$(printf '%s\n' "$SINKS_SHORT" | awk -v n="$CAPTURE_SINK" '$2 == n {print $1; exit}')"
+
+  # Some clients (e.g. Kdenlive) only publish their PID on the client object,
+  # not on the stream; map client index -> PID as a fallback.
+  CLIENT_PIDS="$(pactl list clients 2>/dev/null | awk '
+    /^Client #/ { c = substr($2, 2) }
+    /application.process.id = / { gsub(/"/, "", $3); if (!(c in seen)) { seen[c] = 1; print c, $3 } }
+  ')"
+
   pactl list sink-inputs 2>/dev/null | awk '
     function emit() {
-      if (idx != "") print idx, pid, sink, session
+      if (idx != "") print idx, (pid == "" ? "-" : pid), sink, (client == "" ? "-" : client), session
     }
     /^Sink Input #/ {
       emit()
       idx = substr($3, 2)
       pid = ""
       sink = ""
+      client = ""
       session = ""
     }
     /^[[:space:]]*Sink: / { sink = $2 }
+    /^[[:space:]]*Client: / { client = $2 }
     /application.process.id = / { gsub(/"/, "", $3); pid = $3 }
     /prism.session.id = / { gsub(/"/, "", $3); session = $3 }
     END { emit() }
-  ' | while read -r input_id pid current_sink stream_session; do
+  ' | while read -r input_id pid current_sink client_id stream_session; do
+    [ "$pid" != "-" ] || pid=""
+    if [ -z "$pid" ] && [ "$client_id" != "-" ]; then
+      pid="$(printf '%s\n' "$CLIENT_PIDS" | awk -v c="$client_id" '$1 == c {print $2; exit}')"
+    fi
     if prism_audio_stream_owned \
       "${PRISM_SESSION_ID:-}" "$stream_session" "$pid" \
       "$CONTROL_GROUP" "$APP_CONTROL_GROUP" "$STEAM_CONTROL_GROUP"; then
-      if [ "$current_sink" != "$SESSION_SINK" ]; then
+      if [ "$current_sink" != "$SESSION_SINK_ID" ]; then
         pactl move-sink-input "$input_id" "$SESSION_SINK" >/dev/null 2>&1 || true
       fi
-    elif [ -n "$PHYSICAL" ] && [ "$current_sink" = "$CAPTURE_SINK" ]; then
+    elif [ -n "$PHYSICAL" ] && [ -n "$pid" ] && [ -n "$CAPTURE_SINK_ID" ] &&
+      [ "$current_sink" = "$CAPTURE_SINK_ID" ]; then
+      pactl move-sink-input "$input_id" "$PHYSICAL" >/dev/null 2>&1 || true
+    elif [ -n "$PHYSICAL" ] && [ -n "$pid" ] && [ -n "$SESSION_SINK_ID" ] &&
+      [ "$current_sink" = "$SESSION_SINK_ID" ]; then
+      # A desktop app (known PID outside the session cgroups) that landed on
+      # the session sink, e.g. via a remembered WirePlumber target. Streams
+      # without any PID (loopbacks) are left alone.
       pactl move-sink-input "$input_id" "$PHYSICAL" >/dev/null 2>&1 || true
     fi
   done

@@ -50,13 +50,29 @@ fi
 if [ "${1:-}" = "prism-mirror-watchdog" ]; then
   exec >>"$LOG" 2>&1
   PHYSICAL="${2:-}"
-  # Keep the desktop default on the physical output while the stream runs;
-  # Prism switches it to the capture sink at stream start.
+  # Prism switches the default to the capture sink at stream start. Put the
+  # desktop back on its real output, but follow the user when they pick
+  # another real output in the selector (moving the loopback with it).
   for _ in $(seq 1 720); do
     [ -f "$STATE" ] || break
     cur="$(pactl get-default-sink 2>/dev/null || true)"
-    if [ -n "$PHYSICAL" ] && [ "$cur" != "$PHYSICAL" ]; then
-      pactl set-default-sink "$PHYSICAL" 2>/dev/null || true
+    if prism_audio_is_prism_sink "$cur" || [ -z "$cur" ]; then
+      [ -z "$PHYSICAL" ] || pactl set-default-sink "$PHYSICAL" 2>/dev/null || true
+    elif [ "$cur" != "$PHYSICAL" ]; then
+      echo "user switched output: ${PHYSICAL:-none} -> $cur; moving loopback"
+      old_loop="$(prism_audio_state_get "$STATE" loop_module 2>/dev/null || true)"
+      new_loop="$(pactl load-module module-loopback source="$cur.monitor" sink="$CAPTURE_SINK" latency_msec=20 2>/dev/null || true)"
+      case "$new_loop" in
+        '' | *[!0-9]*) echo "WARN: could not loop $cur into the stream" ;;
+        *)
+          prism_unload_module "$old_loop" || true
+          PHYSICAL="$cur"
+          prism_audio_atomic_write "$STATE" <<EOF
+loop_module=$new_loop
+physical_sink=$PHYSICAL
+EOF
+          ;;
+      esac
     fi
     # pipewire's stream-restore can re-route Prism's capture stream to a monitor
     # it used in earlier sessions; keep it pinned to the capture sink's monitor.
@@ -88,13 +104,13 @@ prism_unload_prism_capture_loopbacks || exit 1
 rm -f "$STATE"
 
 # Physical output the desktop was using before the stream.
-PHYSICAL="$(pactl get-default-sink 2>/dev/null || true)"
+PHYSICAL="$(prism_audio_physical_sink 2>/dev/null || true)"
 echo "physical sink: ${PHYSICAL:-none}"
 
 # Make sure the capture sink exists before Prism's audio init looks for it.
 if ! pactl list short sinks 2>/dev/null | grep -q '^[0-9]*[[:space:]]prism-stream[[:space:]]'; then
   pactl load-module module-null-sink sink_name=prism-stream \
-    sink_properties=device.description="Prism Stream Capture" >/dev/null 2>&1 || true
+    'sink_properties="device.description=\"Prism Stream Capture\""' >/dev/null 2>&1 || true
 fi
 
 # Loop the physical output into the capture sink so desktop audio is heard on

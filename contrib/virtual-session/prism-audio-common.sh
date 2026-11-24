@@ -69,6 +69,50 @@ prism_audio_sink_available() {
     awk -v wanted="$sink" '$2 == wanted {found=1} END {exit !found}'
 }
 
+## @brief Test whether a sink belongs to Prism (never a real output).
+##
+## @param sink Exact sink name.
+## @return Zero for Prism capture/session sinks.
+prism_audio_is_prism_sink() {
+  case "${1:-}" in
+    prism-stream | prism-headless | prism-virtual | sink-prism-*) return 0 ;;
+  esac
+  return 1
+}
+
+## @brief Print the first real (ALSA/Bluetooth) output sink, if any.
+prism_audio_first_real_sink() {
+  pactl list short sinks 2>/dev/null |
+    awk '$2 ~ /^(alsa_output|bluez_output)\./ {print $2; exit}'
+}
+
+## @brief Identify the desktop's real output at stream start.
+##
+## The current default is used unless it is a Prism sink (e.g. left over from
+## an earlier session or switched by Prism at stream start); then the
+## configured prism_default_sink, then the first real output.
+## @return Zero and the sink on stdout, or nonzero when none exists.
+prism_audio_physical_sink() {
+  local current preferred
+
+  current="$(pactl get-default-sink 2>/dev/null || true)"
+  if [ -n "$current" ] && ! prism_audio_is_prism_sink "$current" &&
+    prism_audio_sink_available "$current"; then
+    printf '%s\n' "$current"
+    return 0
+  fi
+  preferred="$(sed -n 's/^prism_default_sink *= *//p' \
+    "$HOME/.config/prism/prism.conf" 2>/dev/null | tail -1)"
+  if [ -n "$preferred" ] && ! prism_audio_is_prism_sink "$preferred" &&
+    prism_audio_sink_available "$preferred"; then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
+  current="$(prism_audio_first_real_sink)"
+  [ -n "$current" ] || return 1
+  printf '%s\n' "$current"
+}
+
 ## @brief Select an available desktop sink without choosing a Prism sink.
 ##
 ## @param preferred User-configured preferred sink.
@@ -79,20 +123,27 @@ prism_audio_choose_restore_sink() {
   local fallback="${2:-}"
   local current
 
-  if prism_audio_sink_available "$preferred"; then
+  # Never "restore" to a Prism sink: once recorded as the physical output it
+  # would be carried from session to session.
+  if ! prism_audio_is_prism_sink "$preferred" && prism_audio_sink_available "$preferred"; then
     printf '%s\n' "$preferred"
     return 0
   fi
-  if prism_audio_sink_available "$fallback"; then
+  if ! prism_audio_is_prism_sink "$fallback" && prism_audio_sink_available "$fallback"; then
     printf '%s\n' "$fallback"
     return 0
   fi
 
   current="$(pactl get-default-sink 2>/dev/null || true)"
-  case "$current" in
-    '' | prism-stream | prism-headless | prism-virtual) return 1 ;;
-  esac
-  prism_audio_sink_available "$current" || return 1
+  if [ -n "$current" ] && ! prism_audio_is_prism_sink "$current" &&
+    prism_audio_sink_available "$current"; then
+    printf '%s\n' "$current"
+    return 0
+  fi
+  # Last resort: the first real output, so the desktop is not left on a
+  # Prism sink after the stream.
+  current="$(prism_audio_first_real_sink)"
+  [ -n "$current" ] || return 1
   printf '%s\n' "$current"
 }
 

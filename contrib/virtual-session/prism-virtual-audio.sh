@@ -82,7 +82,7 @@ echo "capture sink: $CAPTURE_SINK"
 # every app (existing and new) onto the stream; the physical outputs are off
 # anyway, so nothing is lost on the host.
 SINK_MODULE="$(pactl load-module module-null-sink sink_name="$SESSION_SINK" \
-  sink_properties=device.description="Prism Virtual Display" 2>/dev/null || true)"
+  'sink_properties="device.description=\"Prism Virtual Display\""' 2>/dev/null || true)"
 echo "session sink module: ${SINK_MODULE:-failed}"
 case "$SINK_MODULE" in
   '' | *[!0-9]*) echo "ERROR: could not create virtual audio sink"; exit 1 ;;
