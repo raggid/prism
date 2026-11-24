@@ -60,7 +60,7 @@ namespace input {
    */
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
 
-#ifdef SUNSHINE_TESTS
+#ifdef PRISM_TESTS
   namespace testing {
     /**
      * @brief Validate raw protocol input bytes for a unit test.

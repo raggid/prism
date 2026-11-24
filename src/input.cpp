@@ -1991,7 +1991,7 @@ namespace input {
     return input;
   }
 
-#ifdef SUNSHINE_TESTS
+#ifdef PRISM_TESTS
   namespace testing {
     bool is_valid_input_packet(std::span<const std::uint8_t> packet) {
       return ::input::validate_input_packet(packet);
