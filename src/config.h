@@ -65,7 +65,7 @@ namespace config {
     nvenc::nvenc_config nv;  ///< NVIDIA NVENC encoder settings.
 
     struct {
-      int preset;
+      std::string preset;  ///< FFmpeg NVENC preset name ("p1" through "p7"), resolved by name so it does not depend on FFmpeg's enum numbering.
       int multipass;
       int h264_coder;
       int aq;
