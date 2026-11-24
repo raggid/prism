@@ -606,6 +606,18 @@ namespace nvhttp {
     return pair_session_insert_e::ADDED;
   }
 
+  bool evict_abandoned_pair_session(const std::string &unique_id) {
+    std::scoped_lock lock {map_id_sess_mutex};
+    const auto sess_it = map_id_sess.find(unique_id);
+    if (sess_it == map_id_sess.end() || sess_it->second.last_phase == PAIR_PHASE::NONE) {
+      return false;
+    }
+
+    complete_pairing(sess_it->second, false);
+    map_id_sess.erase(sess_it);
+    return true;
+  }
+
   bool is_valid_pairing_id(const std::string_view pairing_id) {
     return pairing_id.size() == PAIRING_ID_SIZE && std::ranges::all_of(pairing_id, [](const char character) {
              return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F');
@@ -944,6 +956,96 @@ namespace nvhttp {
   }
 
   /**
+   * @brief Start a GameStream pairing session for a `getservercert` request.
+   *
+   * @tparam T HTTP server transport type.
+   * @param response HTTP response retained while Web UI PIN approval is pending.
+   * @param request HTTP request containing the client pairing parameters.
+   * @param args Parsed request query parameters.
+   * @param tree XML property tree used for immediate responses.
+   * @param unique_id Client-provided pairing-session identifier.
+   * @return `true` when the response remains pending for Web UI PIN approval.
+   */
+  template<class T>
+  bool start_pairing_session(
+    const std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> &response,
+    const std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> &request,
+    const args_t &args,
+    pt::ptree &tree,
+    const std::string &unique_id
+  ) {
+    const bool pin_stdin = config::prism.flags[config::flag::PIN_STDIN];
+    auto make_session = [&]() {
+      pair_session_t fresh_sess;
+      fresh_sess.client.uniqueID = unique_id;
+      fresh_sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
+      fresh_sess.async_insert_pin.salt = get_arg(args, "salt");
+      fresh_sess.async_insert_pin.device_name = get_arg(args, "devicename");
+      fresh_sess.async_insert_pin.address = net::addr_to_normalized_string(request->remote_endpoint().address());
+      if (!pin_stdin) {
+        fresh_sess.async_insert_pin.response = response;
+      }
+
+      BOOST_LOG(debug) << fresh_sess.client.cert;
+      return fresh_sess;
+    };
+
+    std::string pairing_id;
+    auto insert_result = insert_pair_session(make_session(), pairing_id);
+    if (insert_result == pair_session_insert_e::ALREADY_EXISTS && evict_abandoned_pair_session(unique_id)) {
+      // The previous handshake was abandoned mid-flight; the old session cannot resume,
+      // so replace it with a fresh one and retry the insert once.
+      insert_result = insert_pair_session(make_session(), pairing_id);
+    }
+    switch (insert_result) {
+      using enum pair_session_insert_e;
+
+      case ALREADY_EXISTS:
+        tree.put("root.paired", 0);
+        tree.put("root.<xmlattr>.status_code", 409);
+        tree.put("root.<xmlattr>.status_message", "A pairing session with this uniqueid already exists");
+        return false;
+      case FULL:
+        tree.put("root.paired", 0);
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Too many pending pairing sessions");
+        return false;
+      case ADDED:
+        break;
+      default:
+        // All enumerators are handled above; any other value cannot occur.
+        std::unreachable();
+    }
+
+    if (!pin_stdin) {
+#if defined PRISM_TRAY && PRISM_TRAY >= 1
+      system_tray::update_tray_require_pin();
+#endif
+      return true;
+    }
+
+    std::string pin;
+    std::cout << "Please insert pin: "sv;
+    std::getline(std::cin, pin);
+
+    std::scoped_lock lock {map_id_sess_mutex};
+    expire_pair_sessions_unlocked(std::chrono::steady_clock::now());
+    const auto sess_it = map_id_sess.find(unique_id);
+    if (sess_it == map_id_sess.end() || sess_it->second.async_insert_pin.id != pairing_id) {
+      tree.put("root.paired", 0);
+      tree.put("root.<xmlattr>.status_code", 408);
+      tree.put("root.<xmlattr>.status_message", "Pairing session expired");
+      return false;
+    }
+
+    getservercert(sess_it->second, tree, pin);
+    if (sess_it->second.failed) {
+      map_id_sess.erase(sess_it);
+    }
+    return false;
+  }
+
+  /**
    * @brief Dispatch the top-level GameStream pairing request by phase.
    *
    * @param response HTTP response object to populate.
@@ -976,64 +1078,10 @@ namespace nvhttp {
     args_t::const_iterator it;
     if (it = args.find("phrase"); it != std::end(args)) {
       if (it->second == "getservercert"sv) {
-        pair_session_t sess;
-
-        sess.client.uniqueID = uniqID;
-        sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
-        sess.async_insert_pin.salt = get_arg(args, "salt");
-        sess.async_insert_pin.device_name = get_arg(args, "devicename");
-        sess.async_insert_pin.address = net::addr_to_normalized_string(request->remote_endpoint().address());
-
-        BOOST_LOG(debug) << sess.client.cert;
-        const bool pin_stdin = config::prism.flags[config::flag::PIN_STDIN];
-        if (!pin_stdin) {
-          sess.async_insert_pin.response = response;
-        }
-
-        std::string pairing_id;
-        switch (insert_pair_session(std::move(sess), pairing_id)) {
-          case pair_session_insert_e::ALREADY_EXISTS:
-            tree.put("root.paired", 0);
-            tree.put("root.<xmlattr>.status_code", 409);
-            tree.put("root.<xmlattr>.status_message", "A pairing session with this uniqueid already exists");
-            return;
-          case pair_session_insert_e::FULL:
-            tree.put("root.paired", 0);
-            tree.put("root.<xmlattr>.status_code", 503);
-            tree.put("root.<xmlattr>.status_message", "Too many pending pairing sessions");
-            return;
-          case pair_session_insert_e::ADDED:
-            break;
-        }
-
-        if (pin_stdin) {
-          std::string pin;
-
-          std::cout << "Please insert pin: "sv;
-          std::getline(std::cin, pin);
-
-          std::scoped_lock lock(map_id_sess_mutex);
-          expire_pair_sessions_unlocked(std::chrono::steady_clock::now());
-          const auto sess_it = map_id_sess.find(uniqID);
-          if (sess_it == map_id_sess.end() || sess_it->second.async_insert_pin.id != pairing_id) {
-            tree.put("root.paired", 0);
-            tree.put("root.<xmlattr>.status_code", 408);
-            tree.put("root.<xmlattr>.status_message", "Pairing session expired");
-            return;
-          }
-
-          getservercert(sess_it->second, tree, pin);
-          if (sess_it->second.failed) {
-            map_id_sess.erase(sess_it);
-          }
-          return;
-        } else {
-#if defined PRISM_TRAY && PRISM_TRAY >= 1
-          system_tray::update_tray_require_pin();
-#endif
+        if (start_pairing_session<T>(response, request, args, tree, uniqID)) {
           fg.disable();
-          return;
         }
+        return;
       } else if (it->second == "pairchallenge"sv) {
         tree.put("root.paired", 1);
         tree.put("root.<xmlattr>.status_code", 200);
