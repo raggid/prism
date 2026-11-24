@@ -155,7 +155,7 @@ echo "kwin:$VOUT" > "$OVERRIDE_FILE"
 # physical default on teardown.
 if ! pactl list short sinks 2>/dev/null | grep -q '^[0-9]*[[:space:]]prism-stream[[:space:]]'; then
   pactl load-module module-null-sink sink_name=prism-stream \
-    'sink_properties="device.description=\"Prism Stream Capture\""' >/dev/null 2>&1 || true
+    'sink_properties="device.description=\"Prism - Stream (cliente)\""' >/dev/null 2>&1 || true
 fi
 PHYSICAL_SINK="$(prism_audio_physical_sink 2>/dev/null || true)"
 setsid "$SCRIPT_DIR/prism-virtual-audio.sh" "$PHYSICAL_SINK" >>"$LOG" 2>&1 9>&- &

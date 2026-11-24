@@ -231,7 +231,7 @@ esac
 if ! pactl list short sinks 2>/dev/null |
   awk '$2 == "prism-stream" {found=1} END {exit !found}'; then
   CAPTURE_SINK_MODULE="$(pactl load-module module-null-sink sink_name=prism-stream \
-    'sink_properties="device.description=\"Prism Stream Capture\""' 2>/dev/null || true)"
+    'sink_properties="device.description=\"Prism - Stream (cliente)\""' 2>/dev/null || true)"
 fi
 if ! pactl list short sinks 2>/dev/null |
   awk '$2 == "prism-stream" {found=1} END {exit !found}'; then
@@ -239,7 +239,7 @@ if ! pactl list short sinks 2>/dev/null |
   exit 1
 fi
 SESSION_SINK_MODULE="$(pactl load-module module-null-sink sink_name=prism-headless \
-  'sink_properties="device.description=\"Prism Headless Session\""' 2>/dev/null || true)"
+  'sink_properties="device.description=\"Prism - Sessão headless\""' 2>/dev/null || true)"
 case "$SESSION_SINK_MODULE" in
   '' | *[!0-9]*)
     echo "ERROR: could not create prism-headless audio sink" >&2

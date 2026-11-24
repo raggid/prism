@@ -110,7 +110,7 @@ echo "physical sink: ${PHYSICAL:-none}"
 # Make sure the capture sink exists before Prism's audio init looks for it.
 if ! pactl list short sinks 2>/dev/null | grep -q '^[0-9]*[[:space:]]prism-stream[[:space:]]'; then
   pactl load-module module-null-sink sink_name=prism-stream \
-    'sink_properties="device.description=\"Prism Stream Capture\""' >/dev/null 2>&1 || true
+    'sink_properties="device.description=\"Prism - Stream (cliente)\""' >/dev/null 2>&1 || true
 fi
 
 # Loop the physical output into the capture sink so desktop audio is heard on
