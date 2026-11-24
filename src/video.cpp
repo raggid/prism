@@ -1022,6 +1022,20 @@ namespace video {
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};  ///< YUV444 support discovered for each probed codec.
 
   /**
+   * @brief Sleep for a retry backoff while the owning loop is still running.
+   *
+   * @param delay Total time to wait.
+   * @param running Predicate polled every 50 ms; the wait ends early once it returns false.
+   */
+  template<class Running>
+  void sleep_for_retry(std::chrono::milliseconds delay, Running &&running) {
+    const auto deadline = std::chrono::steady_clock::now() + delay;
+    while (running() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(50ms, deadline - std::chrono::steady_clock::now()));
+    }
+  }
+
+  /**
    * @brief Recreate a display capture object after a capture failure.
    *
    * @param disp Display connection or display handle.
@@ -1246,10 +1260,20 @@ namespace video {
     platf::set_thread_name("video::capture");
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
+    // Grows while reinits keep happening without a single captured frame in between
+    // (e.g. the GPU is out of memory), so a broken capture does not spin at full speed.
+    bool reinit_without_frame = false;
+    auto reinit_backoff = 0ms;
+
     while (capture_ctx_queue->running()) {
       bool artificial_reinit = false;
 
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
+        if (frame_captured) {
+          reinit_without_frame = false;
+          reinit_backoff = 0ms;
+        }
+
         KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
           if (!capture_ctx->images->running()) {
             capture_ctx = capture_ctxs.erase(capture_ctx);
@@ -1320,6 +1344,18 @@ namespace video {
 
               std::this_thread::sleep_for(20ms);
             }
+
+            // The first reinit after a captured frame is immediate (display switch, resize, ...).
+            if (reinit_without_frame) {
+              reinit_backoff = next_retry_backoff(reinit_backoff);
+              BOOST_LOG(warning) << "Capture reinitialized again without a frame; retrying in "sv << reinit_backoff.count() << "ms"sv;
+              // Drop the display first so its GPU buffers are freed while we wait.
+              disp.reset();
+              sleep_for_retry(reinit_backoff, [&]() {
+                return capture_ctx_queue->running();
+              });
+            }
+            reinit_without_frame = true;
 
             while (capture_ctx_queue->running()) {
               // Release the display before reenumerating displays, since some capture backends
@@ -1942,8 +1978,9 @@ namespace video {
    * @param reinit_event Signal raised while the encoder/display is reinitializing.
    * @param encoder Selected encoder.
    * @param channel_data Opaque channel data passed to packets.
+   * @return True when at least one frame was encoded; false when the encoder failed before producing any.
    */
-  void encode_run(
+  bool encode_run(
     int &frame_nr,  // Store progress of the frame number
     safe::mail_t mail,
     img_event_t images,
@@ -1956,7 +1993,7 @@ namespace video {
   ) {
     auto session = make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
     if (!session) {
-      return;
+      return false;
     }
 
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
@@ -1993,10 +2030,11 @@ namespace video {
       // in a separate scope.
       auto dummy_img = disp->alloc_img();
       if (!dummy_img || disp->dummy_img(dummy_img.get()) || session->convert(*dummy_img)) {
-        return;
+        return false;
       }
     }
 
+    bool encoded_any = false;
     while (true) {
       bool requested_idr_frame = false;
 
@@ -2023,7 +2061,7 @@ namespace video {
           frame_timestamp = img->frame_timestamp;
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
-            return;
+            return encoded_any;
           }
         } else if (!images->running()) {
           break;
@@ -2046,8 +2084,9 @@ namespace video {
 
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
-        return;
+        return encoded_any;
       }
+      encoded_any = true;
 
       session->request_normal_frame();
 
@@ -2055,6 +2094,8 @@ namespace video {
       // This is useful for KVM switch scenarios where mouse may disappear during streaming
       platf::enable_mouse_keys();
     }
+
+    return encoded_any;
   }
 
   /**
@@ -2448,6 +2489,10 @@ namespace video {
     // Encoding takes place on this thread
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
+    // Grows while encoder setup keeps failing (e.g. NVENC out of GPU memory) so we
+    // don't recreate the encoder dozens of times per second.
+    auto encoder_backoff = 0ms;
+
     while (!shutdown_event->peek() && images->running()) {
       // Wait for the main capture event when the display is being reinitialized
       if (ref->reinit_event.peek()) {
@@ -2486,7 +2531,7 @@ namespace video {
       }
       hdr_event->raise(std::move(hdr_info));
 
-      encode_run(
+      const bool encoded = encode_run(
         frame_nr,
         mail,
         images,
@@ -2497,6 +2542,18 @@ namespace video {
         *ref->encoder_p,
         channel_data
       );
+      display.reset();
+
+      if (encoded) {
+        encoder_backoff = 0ms;
+        continue;
+      }
+
+      encoder_backoff = next_retry_backoff(encoder_backoff);
+      BOOST_LOG(warning) << "Encoder failed before producing a frame; retrying in "sv << encoder_backoff.count() << "ms"sv;
+      sleep_for_retry(encoder_backoff, [&]() {
+        return !shutdown_event->peek() && images->running();
+      });
     }
   }
 

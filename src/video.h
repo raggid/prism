@@ -688,4 +688,23 @@ namespace video {
     const AVRational fps = framerate_to_rational(config);
     return std::chrono::nanoseconds {(static_cast<int64_t>(fps.den) * 1'000'000'000LL) / fps.num};
   }
+
+  constexpr std::chrono::milliseconds retry_backoff_min {100};  ///< First delay applied after a capture or encoder setup failure repeats.
+  constexpr std::chrono::milliseconds retry_backoff_max {5000};  ///< Upper bound for the delay between repeated capture or encoder setup failures.
+
+  /**
+   * @brief Compute the next delay between repeated capture/encoder setup failures.
+   * The first failure retries immediately (zero), so ordinary reinits such as display
+   * switches are not slowed down. Repeated failures (for example NVENC running out of
+   * GPU memory) back off exponentially instead of spinning and flooding the log.
+   *
+   * @param current Delay used for the previous retry, or zero if the last attempt succeeded.
+   * @return Delay to wait before the next retry.
+   */
+  constexpr std::chrono::milliseconds next_retry_backoff(const std::chrono::milliseconds current) {
+    if (current <= std::chrono::milliseconds::zero()) {
+      return retry_backoff_min;
+    }
+    return current >= retry_backoff_max / 2 ? retry_backoff_max : current * 2;
+  }
 }  // namespace video

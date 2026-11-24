@@ -225,3 +225,24 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple(120, 11988, std::chrono::nanoseconds {8341666})  // 1e9 * 1001 / 120000
   )
 );
+
+TEST(RetryBackoff, StartsAtMinimumAfterSuccess) {
+  EXPECT_EQ(video::next_retry_backoff(0ms), video::retry_backoff_min);
+  EXPECT_EQ(video::next_retry_backoff(-5ms), video::retry_backoff_min);
+}
+
+TEST(RetryBackoff, DoublesUntilCapped) {
+  EXPECT_EQ(video::next_retry_backoff(100ms), 200ms);
+  EXPECT_EQ(video::next_retry_backoff(1600ms), 3200ms);
+  EXPECT_EQ(video::next_retry_backoff(3200ms), video::retry_backoff_max);
+  EXPECT_EQ(video::next_retry_backoff(video::retry_backoff_max), video::retry_backoff_max);
+}
+
+TEST(RetryBackoff, ReachesCapFromMinimum) {
+  auto delay = 0ms;
+  for (int i = 0; i < 16; ++i) {
+    delay = video::next_retry_backoff(delay);
+    EXPECT_LE(delay, video::retry_backoff_max);
+  }
+  EXPECT_EQ(delay, video::retry_backoff_max);
+}
