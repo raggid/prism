@@ -5,7 +5,13 @@
 #pragma once
 
 // standard includes
+#include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <memory>
+#include <span>
+#include <string_view>
+#include <vector>
 
 // local includes
 #include "platform/common.h"
@@ -53,6 +59,26 @@ namespace input {
    * @return Shared input state bound to the stream mailbox.
    */
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
+
+#ifdef SUNSHINE_TESTS
+  namespace testing {
+    /**
+     * @brief Validate raw protocol input bytes for a unit test.
+     *
+     * @param packet Raw packet bytes.
+     * @return True when the packet is safe for typed processing.
+     */
+    bool is_valid_input_packet(std::span<const std::uint8_t> packet);
+
+    /**
+     * @brief Return the number of validated packets waiting in a test input queue.
+     *
+     * @param input Shared stream input state.
+     * @return Number of queued packets, or zero for an empty input pointer.
+     */
+    std::size_t queued_input_packet_count(const std::shared_ptr<input_t> &input);
+  }  // namespace testing
+#endif
 
   /**
    * @brief Touchscreen coordinate bounds used to scale absolute input.
