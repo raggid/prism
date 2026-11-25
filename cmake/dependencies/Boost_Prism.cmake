@@ -54,7 +54,10 @@ if(NOT Boost_FOUND)
         # https://github.com/boostorg/locale/pull/273
         find_program(PATCH_EXECUTABLE patch REQUIRED)
         set(BOOST_PATCH_ARGS PATCH_COMMAND
-                "${PATCH_EXECUTABLE}" -p1 --forward -i "${CMAKE_SOURCE_DIR}/cmake/patches/boost-locale-cmake-4.5.patch")
+                "${CMAKE_COMMAND}"
+                "-DPATCH_EXECUTABLE=${PATCH_EXECUTABLE}"
+                "-DPATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/boost-locale-cmake-4.5.patch"
+                -P "${CMAKE_SOURCE_DIR}/cmake/scripts/patch_boost_locale.cmake")
     endif()
 
     if(CMAKE_VERSION VERSION_LESS "3.24.0")
