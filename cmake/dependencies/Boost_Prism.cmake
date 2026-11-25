@@ -48,6 +48,15 @@ if(NOT Boost_FOUND)
     set(BOOST_URL "https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/boost-${BOOST_VERSION}-cmake.tar.xz")  # cmake-lint: disable=C0301
     set(BOOST_HASH "SHA256=67acec02d0d118b5de9eb441f5fb707b3a1cdd884be00ca24b9a73c995511f74")
 
+    set(BOOST_PATCH_ARGS)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.5")
+        # Backport the Boost.Locale source grouping fix for CMake 4.5 (LizardByte/Sunshine@82fe0f06).
+        # https://github.com/boostorg/locale/pull/273
+        find_program(PATCH_EXECUTABLE patch REQUIRED)
+        set(BOOST_PATCH_ARGS PATCH_COMMAND
+                "${PATCH_EXECUTABLE}" -p1 --forward -i "${CMAKE_SOURCE_DIR}/cmake/patches/boost-locale-cmake-4.5.patch")
+    endif()
+
     if(CMAKE_VERSION VERSION_LESS "3.24.0")
         FetchContent_Declare(
                 Boost
@@ -59,6 +68,7 @@ if(NOT Boost_FOUND)
                 Boost
                 URL ${BOOST_URL}
                 URL_HASH ${BOOST_HASH}
+                ${BOOST_PATCH_ARGS}
                 OVERRIDE_FIND_PACKAGE  # requires CMake 3.24+, but we have a macro to handle it for other versions
         )
     endif()
